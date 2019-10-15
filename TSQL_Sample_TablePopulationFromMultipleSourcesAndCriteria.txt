@@ -10,7 +10,6 @@
 						- Event date: measure specific date if applicable 
 		DESCRIPTION: 
 					Declarations
-					@strSQL: sql qry to execute, typcially used when running qry across multiple servers, databases, or table names
 					@strSQL: dynamic sql qry to execute, typcially used when running qry across multiple servers, databases, or table names
 					@dsCNT: counter for while loops
 					@intTblExists: (0,1) does production table exists?
