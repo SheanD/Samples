@@ -1,0 +1,160 @@
+		EXECUTE [usp_0Dep_DBOTypeDrop] [usp_11Dep_Populate_DataMembersInSamples], [P];
+		GO
+		CREATE PROCEDURE [dbo].[usp_11Dep_Populate_DataMembersInSamples]
+		AS
+		/***
+		PURPOSE: 
+					Populates [dbo].[DataMembersInSamples] table 
+						- LOBSampleID (uniqueidentifier): identifies the contract number, hp plan, product, product line, region, submission 
+						- MemberID: unique member id
+						- Event date: measure specific date if applicable 
+		DESCRIPTION: 
+					Declarations
+					@strSQL: sql qry to execute, typcially used when running qry across multiple servers, databases, or table names
+					@dsCNT: counter for while loops
+					@intTblExists: (0,1) does production table exists?
+					@tblName: name of prodution table
+					@strMeasureCode: name of measure being run
+					@strDemo: (yes, no) is a demo run?
+					@strDemosize: how many member deep is demo run, for each line of business?
+					@strDestinationServer: production server name
+					@DestinationHP: healthplan running production
+					@strIsLSCIncluded, etc.: are these measures selected to be included
+
+					Dependencies
+					[usp_0Dep_DBOTypeDrop]: procedure to abreviate text for dropping procedure if exists before its recreation
+					[dbo].[usp_0Dep_GlobalValuesGet]: procedure to retrieve global variable values for build run
+					[dbo].[usp_01Dep_PassedHPTableInspectIfExists]: procedure to 
+
+		ORIGINAL AUTHOR: Shean R. Dalton
+		MODIFICATIONS: 
+					
+		***/
+		BEGIN
+			SET NOCOUNT ON;
+			SET XACT_ABORT ON;
+
+			DECLARE 
+					@strSQL					NVARCHAR(MAX)	
+				,	@dsCNT					INT				 
+				,	@intTblExists			INT
+				,	@tblName				NVARCHAR(10)
+				,	@strMeasureCode			NVARCHAR(5)
+				,	@strDemo				NVARCHAR(10)		= [dbo].[usp_0Dep_GlobalValuesGet] ('@strDemo')
+				,	@strDemosize			NVARCHAR(10)		= [dbo].[usp_0Dep_GlobalValuesGet] ('@strDemosize')
+				,	@strDestinationServer	NVARCHAR(50)		= [dbo].[usp_0Dep_GlobalValuesGet] ('@strDestinationServer')
+				,	@DestinationHP			NVARCHAR(50)		= [dbo].[usp_0Dep_GlobalValuesGet] ('@strDB')
+				,	@strIsLSCIncluded		NVARCHAR(50)		= [dbo].[usp_0Dep_GlobalValuesGet] ('@strIsLSCIncluded')
+				,	@strIsOMWIncluded		NVARCHAR(50)		= [dbo].[usp_0Dep_GlobalValuesGet] ('@strIsOMWIncluded')
+				;
+
+			SET @dsCNT = 1;
+
+			WHILE @dsCNT <= 18
+			BEGIN
+
+				SET @strMeasureCode =	CASE 
+											WHEN @dsCNT IN (1) THEN N'ABA' 
+											WHEN @dsCNT IN (2) THEN N'WCC' 
+											WHEN @dsCNT IN (3, 16) THEN N'CIS' 
+											WHEN @dsCNT IN (4) THEN N'IMA' 
+											WHEN @dsCNT IN (15) THEN N'BCS' 
+											WHEN @dsCNT IN (5) THEN N'CCS' 
+											WHEN @dsCNT IN (6) THEN N'COL' 
+											WHEN @dsCNT IN (7) THEN N'COA' 
+											WHEN @dsCNT IN (8) THEN N'CBP' 
+											WHEN @dsCNT IN (9) THEN N'CDC' 
+											WHEN @dsCNT IN (10) THEN N'MRP' 
+											WHEN @dsCNT IN (11) THEN N'PPC' 
+											WHEN @dsCNT IN (12) THEN N'W15' 
+											WHEN @dsCNT IN (13) THEN N'W34' 
+											WHEN @dsCNT IN (14) THEN N'AWC' 
+											WHEN @dsCNT IN (17) THEN N'OMW' 
+											WHEN @dsCNT IN (18) THEN N'TRC' 
+										END;
+				
+				IF @strMeasureCode = 'OMW' AND @strIsOMWIncluded = 'NO' 
+				BEGIN
+					GOTO lblNext
+				END
+
+				IF @strMeasureCode = 'LSC' AND @strIsLSCIncluded = 'NO' 
+				BEGIN
+					GOTO lblNext
+				END
+											
+				SET @tblName = 'sample_' + @strMeasureCode;
+
+				SET	@strMeasureCode =	CASE
+											WHEN @dsCNT = 16 THEN N'LSC'
+											ELSE @strMeasureCode
+										END;
+
+				EXECUTE [dbo].[usp_01Dep_PassedHPTableInspectIfExists] @tblName, @strDestinationServer, @DestinationHP, 'dbo', @intTblExists = @intTblExists OUTPUT;
+
+				IF (@intTblExists <> 0)
+				BEGIN
+					SET @strSQL =	N'	
+										BEGIN			
+										 ; WITH x AS	(
+															SELECT LOBSampleID, T1.member_id, T1.i ' +	CASE
+																															WHEN @strMeasureCode = 'PPC' THEN N', T1.delivery_date '
+																															WHEN @strMeasureCode = 'MRP' THEN N', T1.discharge_date '
+																															WHEN @strMeasureCode = 'TRC' THEN N', T1.discharge_date '
+																															ELSE ''
+																														END
+																										+ '
+																, rnk = ROW_NUMBER() OVER(PARTITION BY LOBSampleID ORDER BY LOBSampleID)
+															 
+															FROM [dbo].[' + @tblName + '] T1
+															INNER JOIN [dbo].[DataPlanLOBs] T2
+															ON		T1.productline = T2.Productline
+																AND	T1.product = T2.Product
+																AND	T1.region = T2.Region
+															INNER JOIN [dbo].[VarMeasures] T4
+															ON	T4.MeasureCode = ''' + @strMeasureCode + '''
+															INNER JOIN [dbo].[NodeLOBSamples] T3
+															ON		T2.PlanLOBID = T3.PlanLOBID
+																AND T4.MeasureID = T3.MeasureID
+															GROUP BY LOBSampleID, T1.member_id, T1.i ' +	CASE
+																															WHEN @strMeasureCode = 'PPC' THEN N', T1.delivery_date '
+																															WHEN @strMeasureCode = 'MRP' THEN N', T1.discharge_date '
+																															WHEN @strMeasureCode = 'TRC' THEN N', T1.discharge_date '
+																															ELSE ''
+																														END
+																										+ '
+														)
+
+														INSERT INTO [dbo].[DataMembersInSamples] (LOBSampleID, MemberID, i'	+	CASE
+																																	WHEN @strMeasureCode IN ('PPC', 'MRP', 'TRC') THEN N', EventDate '
+																																	ELSE ''
+																																END																					
+																															+ '
+																								)
+														SELECT LOBSampleID, member_id, i'	+	CASE
+																									WHEN @strMeasureCode = 'PPC' THEN N', x.delivery_date '
+																									WHEN @strMeasureCode IN ('MRP', 'TRC') THEN N', x.discharge_date '
+																									ELSE ''
+																								END											
+																							+ '
+														FROM x
+									';
+
+					SET @strSQL =	CASE
+										WHEN @strDemo = 'NO'	THEN @strSQL + N' ; END'
+										WHEN @strDemo = 'YES'	THEN @strSQL + N' WHERE rnk <= ' + @strDemosize + ' ; END'
+									END
+
+					EXEC sp_executesql @strSQL;
+					
+				END
+
+				lblNext:
+				SET @dsCNT += 1;
+			END
+
+			SET NOCOUNT OFF;
+			RETURN;
+			
+		END
+	GO
