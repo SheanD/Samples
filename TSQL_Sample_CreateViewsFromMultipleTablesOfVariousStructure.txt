@@ -1,0 +1,304 @@
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE PROCEDURE [dbo].[RunReports]
+		@strDb			VARCHAR(50)	
+	,	@strDataEndDt	VARCHAR(50) = NULL 
+AS
+/***** 
+PURPOSE: 
+			Create Views of multiple reports (tables) based on desired reporting criteria
+			Number of reports unknown, column names vary, and legacy report column names considered
+			After this procedure, next one loads views to Excel file
+
+DESCRIPTION: 
+			Declarations:
+			@strDb: passed healthplan database name
+			@strDataEndDt: Production run date end period, all generated if not passed
+			@dsCNTMax: While loop counter maximum, number of reports to consider
+			@dsCNT: While loop counter
+			@strSQL: dynamic sql qry
+			@strDataEndDtToPass: conversion of @strDataEndDt to dynamic sql
+
+DEPENDENCIES
+			Procedure: [dbo].[RunReports02Drop]
+			Procedure: [dbo].[RunReports01Single]
+				
+ORIGINAL AUTHOR: Shean R. Dalton
+MODIFICATIONS: 
+			7/11/2016:
+					Reason:
+						New Schema for reports, "Report" and removing "Report" from table name
+					Modifications
+						Replace all occurrences of "dbo" with "Reports" in dynamic qry's
+						Add line to remove any occurrence of report with old nomenclature
+*****/	
+BEGIN
+	SET NOCOUNT ON
+	DECLARE
+				@dsCNTMax					INT
+			,	@dsCNT					INT
+			,	@strSQL					VARCHAR(MAX)
+			,	@strDataEndDtToPass		VARCHAR(50)
+			;
+	
+	IF ISNULL(@strDataEndDt, '') = ''
+	BEGIN
+		SET @strDataEndDtToPass = '';
+	END
+	ELSE
+	BEGIN
+		SET @strDataEndDtToPass = ', ''''' + @strDataEndDt + ''''''
+	END
+	
+	EXECUTE [RunReports02Drop];
+	
+	IF OBJECT_ID(N'[dbo].[tmpQuery]') IS NOT NULL
+		DROP TABLE [dbo].[tmpQuery];
+	CREATE TABLE [dbo].[tmpQuery] (
+		[pk] [INT] IDENTITY(1,1) NOT NULL,
+		[strblah] [varchar](MAX) NULL,
+		[intblah] [INT] NULL
+		);
+
+	/*** Determine number of reports ***/
+	SET @strSQL =	N'
+						INSERT INTO [dbo].[tmpQuery] (intblah)
+						SELECT COUNT(TABLE_NAME)
+						FROM [' + @strDb + '].[INFORMATION_SCHEMA].[TABLES] 
+						WHERE TABLE_SCHEMA = ''Reports''
+					;';
+	
+	EXEC (@strSQL); 
+	
+	SET @dsCNTMax = (SELECT MAX(intblah) FROM [dbo].[tmpQuery]);
+
+	DELETE [dbo].[tmpQuery];
+
+	/*** Create execution qry string and load into holding table ***/		
+	SET @dsCNT = 1;
+
+	WHILE @dsCNT <= @dsCNTMax
+	BEGIN
+
+		SET @strSQL = '
+
+						INSERT INTO [dbo].[tmpQuery] (strblah)
+						SELECT TOP 1 ''EXECUTE RunReports01Single [' + @strDb + '], ['' + TABLE_NAME + ''] ' + @strDataEndDtToPass + ';''
+						FROM [' + @strDb + '].[INFORMATION_SCHEMA].[TABLES] T1
+						WHERE TABLE_SCHEMA = ''Reports''
+							AND NOT EXISTS	(
+												SELECT 1
+												FROM [dbo].[tmpQuery] T10
+												WHERE T10.strblah = ''EXECUTE RunReports01Single [' + @strDb + '], ['' + TABLE_NAME + ''] ' + @strDataEndDtToPass + ';''
+											);
+						';
+
+		EXEC(@strSQL);
+
+		SET @dsCNT += 1;
+	END
+
+	/*** Run execution qry strings, indexing through holding table ***/		
+	SET @dsCNT = 1;
+	SET @dsCNTMax = (SELECT MAX(pk) FROM [dbo].[tmpQuery]);
+
+	WHILE @dsCNT <= @dsCNTMax
+	BEGIN
+		SET @strSQL = (SELECT strblah FROM [dbo].[tmpQuery] WHERE pk = @dsCNT);
+
+		EXEC(@strSQL);
+
+		SET @dsCNT += 1;
+	END
+	PRINT ('Ready!')
+	PRINT ('Friendly reminder, simple syntax is EXEC [RunReports] [ENTER DATABASE NAME HERE], [ENTER DataEndDt HERE if not most recent]')
+	PRINT ('Happy HEDISing')
+	SET NOCOUNT OFF
+END	
+
+/**************************************************
+
+	Dependent procedure [dbo].[RunReports02Drop]
+
+**************************************************/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE PROCEDURE [dbo].[RunReports02Drop]
+AS
+/***
+PURPOSE: Drop specific views, those with a preface of v and with a length of 4
+DESCRIPTION: 
+
+		Declarations:
+		@dsCNTMax: While loop counter maximum, number of reports to consider
+		@dsCNT: While loop counter
+		@strSQL: dynamic sql qry
+		@varName: Table_Schema name
+		@view: View name
+					
+ORIGINAL AUTHOR: Shean R. Dalton
+MODIFICATIONS: 
+				Reason:
+					Report table names no longer include preface "reports_"
+					Report table names require schema to differentiate between results and reports
+				Modifications:
+					Filter on schema name, rather than table name
+					Removed @variables no longer used to identify table name
+					Added schema name 'Reports' to dynamic sql statements
+***/
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE 
+						@dsCNTMax	INT
+				,		@varName    NVARCHAR(50) = 'Reports'
+                ,		@dsCNT		INT
+                ,		@strSQL     NVARCHAR(MAX)
+                ,		@view       NVARCHAR(MAX)
+                ;
+              
+    SET @dsCNT = 1;
+	SET @dsCNTMax = (
+                        SELECT COUNT(DISTINCT TABLE_NAME) 
+                        FROM [INFORMATION_SCHEMA].[VIEWS] 
+                        WHERE [TABLE_SCHEMA] = @varName 
+                    );
+
+    WHILE @dsCNT <= @dsCNTMax
+    BEGIN
+        SET @view = (
+						SELECT TOP 1 TABLE_NAME 
+						FROM [INFORMATION_SCHEMA].[VIEWS] 
+						WHERE  [TABLE_SCHEMA] = @varName 
+                    );
+
+        SET @strSQL = 'DROP VIEW [' + @varName + '].[' + @view + '];';
+
+		EXEC(@strSQL);
+                     
+        SET @dsCNT += 1;
+    END
+    SET NOCOUNT OFF;
+    RETURN;
+END
+GO
+
+/**************************************************
+
+	Dependent procedure [dbo].[RunReports01Single]
+
+**************************************************/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE PROCEDURE [dbo].[RunReports01Single]
+		@strDb			VARCHAR(50)
+	,	@strReport		VARCHAR(50)
+	,	@strDataEndDt	VARCHAR(50) = NULL 
+AS
+/***** 
+PURPOSE: 
+		Create View of a Report, based on passed database name, passed measure name, and the most recent DataEndDt.
+		Report column names vary 
+DESCRIPTION: 
+					
+		Declarations:
+		@strSQL: dynamic sql qry
+		@Columns: Column name of report
+		@strDataEndDtCondition: Set to most recent report run date, or, use passed report run date
+
+ORIGINAL AUTHOR: Shean R. Dalton
+MODIFICATIONS: 
+			7/11/2016:
+					Reason:	New Schema for reports, "Report" and removing "Report" from table name
+					Modifications
+						Replace all occurrences of "dbo" with "Reports" in dynamic qry's
+						Add line to remove any occurrence of report with old nomenclature
+			5/12/2016
+					Reason: Proactive hedis max DataEndDt is no longer report of interest
+					Modifications: allow input of DataEndDt, or, by default max is selected
+*****/
+BEGIN
+	SET NOCOUNT ON
+	DECLARE
+				@strSQL					VARCHAR(MAX)
+			,	@Columns				VARCHAR(MAX)
+			,	@strDataEndDtCondition	VARCHAR(500)
+			;
+
+	/*** Define value of @strDataEndDtCondition ***/		
+	IF ISNULL(@strDataEndDt, '') = ''
+	BEGIN
+		SET @strDataEndDtCondition = '	(SELECT MAX(DataEndDt) FROM [' + @strDb + '].[Reports].[' + @strReport + '])';
+	END
+	ELSE
+	BEGIN
+		SET @strDataEndDtCondition = '''' + @strDataEndDt + ''''
+	END
+
+	/*** Does report exist? ***/		
+	IF OBJECT_ID (N'' + '[' + @strDb + '].[Reports].[' + @strReport + ']') IS NOT NULL
+	BEGIN		
+
+		/*** Drop view if already exists and create new view ***/		
+		SET @strSQL = N'IF OBJECT_ID (N''[Reports].[' + @strReport + ']'') IS NOT NULL DROP VIEW [Reports].[' + @strReport + '];';
+
+		EXEC(@strSQL);	
+
+		SET @strSQL = N'
+						CREATE VIEW [Reports].[' + @strReport + '] AS
+						SELECT * 
+						FROM [' + @strDb + '].[Reports].[' + @strReport + '] 
+						WHERE DataEndDt  = ' + @strDataEndDtCondition + '
+						;';
+
+		EXEC(@strSQL);
+
+		/*** Capture column names, remove ProcVersion, and RunDate ***/		
+		SELECT @Columns =	COALESCE(@Columns + ', ', '') + '[' + COLUMN_NAME + ']'
+							FROM [information_schema].[columns]
+							WHERE table_name = 'v' + @strReport + '';
+		
+		SET @Columns = REPLACE(REPLACE(@Columns, ', [ProcVersion]', ''), ', [RunDate]', '');
+
+		/*** Recreate view with only desired columns ***/		
+		IF PATINDEX('%data_element%', @Columns) <> 0
+		BEGIN
+
+			SET @strSQL = N'
+							ALTER VIEW [Reports].[' + @strReport + ']
+							AS
+							SELECT ' + @Columns + '
+							FROM [' + @strDb + '].[Reports].[' + @strReport + ']
+							WHERE LEFT(data_element, 7) <> ''Version''
+							AND DataEndDt =	(
+												SELECT MAX(DataEndDt) 
+												FROM [' + @strDb + '].[Reports].[' + @strReport + ']
+											)
+							;';
+		END
+		ELSE
+		BEGIN
+			SET @strSQL = N'
+							ALTER VIEW [Reports].[' + @strReport + '] 
+							AS
+							SELECT ' + @Columns + '
+							FROM [' + @strDb + '].[Reports].[' + @strReport + ']
+							WHERE DataEndDt =	(
+												SELECT MAX(DataEndDt) 
+												FROM [' + @strDb + '].[Reports].[' + @strReport + ']
+												)
+							;';
+		END
+		EXECUTE (@strSQL);
+
+	END
+	SET NOCOUNT OFF
+END
+GO
